@@ -438,7 +438,7 @@ html, body {
       </div>
     </div>
 
-    <input type="file" class="file-input" id="file-input" accept="image/*" onchange="handleFile(event)">
+    <input type="file" id="file-input" accept="image/*" style="display:none;" onchange="handleFile(event)">
 
     <div class="vin-wrap">
       <div class="vin-lbl">رقم الهيكل VIN (اختياري — يزيد دقة التحليل)</div>
@@ -645,18 +645,15 @@ function triggerUpload(angle) {
   }
 }
 
-function handleFile(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const angle = state.currentSlot;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    const base64 = ev.target.result.split(',')[1];
-    state.photos[angle] = { base64, dataUrl: ev.target.result, file };
-    renderSlot(angle, ev.target.result);
-    checkReady();
-  };
-  reader.readAsDataURL(file);
+function triggerUpload(angle) {
+  state.currentSlot = angle;
+  const inp = document.getElementById('file-input');
+  if (inp) {
+    inp.click(); // هذا الأمر سيفتح استوديو الصور فوراً
+  } else {
+    alert("عذراً، حدث خطأ في النظام، يرجى تحديث الصفحة.");
+  }
+}
 }
 
 function renderSlot(angle, dataUrl) {
