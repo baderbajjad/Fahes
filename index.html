@@ -623,9 +623,10 @@ html, body {
 </div>
 
 <script>
+  }
 // ── STATE ──
 const state = {
-  photos: {},        // key: angle, value: { base64, file }
+  photos: {}, 
   currentSlot: null,
   vin: '',
   report: null,
@@ -638,8 +639,10 @@ const ANGLE_AR = { front:'الأمام', back:'الخلف', left:'اليسار',
 function triggerUpload(angle) {
   state.currentSlot = angle;
   const inp = document.getElementById('file-input');
-  inp.value = '';
-  inp.click();
+  if (inp) {
+    inp.value = '';
+    inp.click();
+  }
 }
 
 function handleFile(e) {
@@ -661,11 +664,11 @@ function renderSlot(angle, dataUrl) {
   const label = ANGLE_AR[angle];
   slot.classList.add('uploaded');
   slot.innerHTML = `
-    <img class="preview" src="${dataUrl}" alt="${label}">
-    <div class="slot-overlay">
-      <div style="color:white;font-size:11px;font-weight:700;">${label}</div>
+    <img class="preview" src="${dataUrl}" alt="${label}" style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 10px;">
+    <div class="slot-overlay" style="position: absolute; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center;">
+      <div style="color:white;font-size:11px;font-weight:700;">تغيير</div>
     </div>
-    <div class="slot-check">✓</div>
+    <div class="slot-check" style="position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; border-radius: 50%; background: #1D9E75; color: white; display: flex; align-items: center; justify-content: center; font-size: 10px;">✓</div>
   `;
 }
 
@@ -674,6 +677,238 @@ function checkReady() {
   document.getElementById('btn-start').disabled = count < 3;
 }
 
+function setProgress(step) {
+  ['pb1','pb2','pb3'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) el.className = 'pb' + (i < step - 1 ? ' done' : i === step - 1 ? ' active' : '');
+  });
+}
+
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const target = document.getElementById('screen-' + name);
+  if (target) target.classList.add('active');
+  const map = { upload: 1, analysis: 2, report: 3 };
+  setProgress(map[name]);
+}
+
+function activateStep(idx, sub) {
+  const step = document.getElementById('astep-' + idx);
+  const dot = document.getElementById('adot-' + idx);
+  const subEl = document.getElementById('asub-' + idx);
+  if (step) step.className = 'astep active';
+  if (dot) dot.className = 'adot active';
+  if (subEl && sub) subEl.textContent = sub;
+}
+
+function doneStep(idx) {
+  const step = document.getElementById('astep-' + idx);
+  const dot = document.getElementById('adot-' + idx);
+  if (step) step.className = 'astep done';
+  if (dot) {
+    dot.className = 'adot done';
+    dot.textContent = '✓';
+  }
+}
+
+async function startInspection() {
+  state.vin = document.getElementById('vin-input').value.trim().toUpperCase();
+  showScreen('analysis');
+  document.getElementById('upload-error').style.display = 'none';
+
+  setTimeout(() => { activateStep(1, 'كشف اختلافات اللون بين الألواح...'); }, 400);
+  setTimeout(() => { doneStep(1); activateStep(2, 'قياس الفجوات وزوايا التركيب...'); }, 3200);
+  setTimeout(() => { doneStep(2); activateStep(3, 'فحص حالة الأضواء والمصابيح...'); }, 6000);
+  setTimeout(() => { doneStep(3); activateStep(4, 'بناء التقرير الثنائي...'); }, 8800);
+
+  try {
+    const result = await callClaudeAPI();
+    doneStep(4);
+    document.getElementById('a-title').textContent = 'اكتمل التحليل ✓';
+    document.getElementById('a-sub').textContent = 'Analysis complete — building report';
+    setTimeout(() => { renderReport(result); showScreen('report'); }, 1200);
+  } catch (err) {
+    showScreen('upload');
+    const errEl = document.getElementById('upload-error');
+    errEl.style.display = 'block';
+    errEl.textContent = 'حدث خطأ أثناء التحليل: ' + err.message;
+  }
+}
+
+async function callClaudeAPI() {
+  const photoEntries = Object.entries(state.photos);
+  const imageBlocks = photoEntries.map(([angle, data]) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: 'image/jpeg', data: data.base64 }
+  }));
+
+  const angleList = photoEntries.map(([a]) => ANGLE_AR[a]).join('، ');
+
+  const prompt = `أنت خبير فحص سيارات محترف متخصص في كشف التصليح والطلاء والأضرار من الصور البصرية.
+الصور المرفقة: ${angleList}
+${state.vin ? 'رقم الهيكل VIN: ' + state.vin : ''}
+مهمتك: افحص هذه الصور بدقة شديدة وابحث عن عيوب البودي والطلاء. أجب فقط بـ JSON.`;
+
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 1500,
+      messages: [{
+        role: 'user',
+        content: [
+          ...imageBlocks,
+          { type: 'text', text: prompt }
+        ]
+      }]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error?.message || 'خطأ في الاتصال بالخادم');
+  }
+
+  const data = await response.json();
+  const text = data.content.map(b => b.text || '').join('').trim();
+  const clean = text.replace(/```json|```/g, '').trim();
+  return JSON.parse(clean);
+}
+
+function renderReport(r) {
+  state.report = r;
+  const score = r.score || 50;
+  const scoreNum = document.getElementById('score-num');
+  const scoreRing = document.getElementById('score-ring');
+  
+  if (scoreNum) scoreNum.textContent = score;
+  if (scoreRing) {
+    const color = score >= 75 ? '#1D9E75' : score >= 50 ? '#EF9F27' : '#E24B4A';
+    scoreRing.style.borderColor = color;
+    scoreNum.style.color = color;
+  }
+
+  document.getElementById('car-info').textContent = (state.vin ? 'VIN: ' + state.vin + ' | ' : '') + 'Inspection ID: FAH-' + Date.now().toString().slice(-6);
+  document.getElementById('report-date').textContent = new Date().toLocaleDateString('ar-SA', { year:'numeric', month:'long', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  document.getElementById('report-verdict').textContent = r.summary_ar || '';
+
+  const issues = r.issues || [];
+  document.getElementById('count-high').textContent = issues.filter(i => i.severity === 'high').length;
+  document.getElementById('count-med').textContent = issues.filter(i => i.severity === 'medium').length;
+  document.getElementById('count-ok').textContent = (r.ok_areas || []).length;
+
+  updateDamageMap(issues);
+  renderIssues(issues, 'all');
+
+  const verdictMap = {
+    safe_to_buy: { cls: 'vb-ok', icon: '✅', title: 'السيارة آمنة للشراء', en: 'Safe to buy' },
+    needs_inspection: { cls: 'vb-warn', icon: '⚠', title: 'يُوصى بفحص إضافي', en: 'Recommend specialist check' },
+    avoid: { cls: 'vb-danger', icon: '🚫', title: 'نوصي بتجنب هذه السيارة', en: 'Avoid this vehicle' },
+  };
+  const v = verdictMap[r.verdict] || verdictMap['needs_inspection'];
+  const vbox = document.getElementById('verdict-box');
+  if (vbox) {
+    vbox.className = 'verdict-box ' + v.cls;
+    document.getElementById('verdict-icon').textContent = v.icon;
+    document.getElementById('verdict-title').textContent = v.title + ' — ' + v.en;
+    document.getElementById('verdict-text').textContent = (r.summary_ar || '') + '\n' + (r.summary_en || '');
+  }
+}
+
+function updateDamageMap(issues) {
+  const zoneColors = {};
+  issues.forEach(issue => {
+    const z = issue.zone;
+    if (!z) return;
+    const current = zoneColors[z];
+    const newSev = issue.severity;
+    const priority = { high: 3, medium: 2, low: 1 };
+    if (!current || priority[newSev] > priority[current]) zoneColors[z] = newSev;
+  });
+
+  const colorMap = { high: '#E24B4A', medium: '#EF9F27', low: '#1D9E75' };
+  const zoneMap = { front: 'front', rear: 'rear', left: 'left', right: 'right', hood: 'hood' };
+
+  Object.entries(zoneMap).forEach(([zone, id]) => {
+    const el = document.getElementById('zone-' + id);
+    if (!el) return;
+    const sev = zoneColors[zone];
+    if (sev) {
+      el.setAttribute('fill', hexToRgba(colorMap[sev], 0.2));
+      el.setAttribute('stroke', colorMap[sev]);
+    }
+  });
+}
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1,3),16);
+  const g = parseInt(hex.slice(3,5),16);
+  const b = parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function renderIssues(issues, filter) {
+  const list = document.getElementById('issues-list');
+  const sevColor = { high: 'var(--red)', medium: 'var(--yellow)', low: 'var(--green)' };
+  const sevPill = { high: 'pill-red', medium: 'pill-yellow', low: 'pill-green' };
+  const sevLabel = { high: 'خطير High', medium: 'متوسط Med', low: 'خفيف Low' };
+
+  const filtered = filter === 'all' ? issues :
+                   filter === 'ok' ? [] :
+                   issues.filter(i => i.severity === filter);
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div style="text-align:center;padding:24px;color:var(--muted);font-size:13px;">لا توجد مشاكل في هذه الفئة</div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(issue => `
+    <div class="issue">
+      <div class="idot" style="background:${sevColor[issue.severity] || 'var(--muted)'}"></div>
+      <div class="ibody">
+        <div class="ititle">${issue.title_ar || ''} — <span style="font-weight:400;font-size:12px;color:var(--muted)">${issue.title_en || ''}</span></div>
+        <div class="idesc">${issue.desc_ar || ''}</div>
+        <div class="imeta">
+          <span class="pill ${sevPill[issue.severity] || 'pill-gray'}">${sevLabel[issue.severity] || issue.severity}</span>
+          <span class="pill pill-gray">ثقة ${issue.confidence || 0}%</span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function setTab(filter, btn) {
+  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (state.report) renderIssues(state.report.issues || [], filter);
+}
+
+function downloadReport() {
+  if (!state.report) return;
+  const content = `تقرير فحص السيارة — Fahes AI\n\nالتقييم: ${state.report.score}/100`;
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `fahes-report.txt`;
+  a.click();
+}
+
+function reset() {
+  state.photos = {};
+  state.vin = '';
+  state.report = null;
+  ANGLES.forEach(a => {
+    const slot = document.getElementById('slot-' + a);
+    if (slot) {
+      slot.className = 'photo-slot';
+      slot.innerHTML = `<div class="slot-icon">＋</div><div class="slot-label">${ANGLE_AR[a]}<br>${a}</div>`;
+    }
+  });
+  document.getElementById('vin-input').value = '';
+  document.getElementById('btn-start').disabled = true;
+  showScreen('upload');
+}
 // ── PROGRESS ──
 function setProgress(step) {
   ['pb1','pb2','pb3'].forEach((id, i) => {
